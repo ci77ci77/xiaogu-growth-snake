@@ -1,7 +1,7 @@
 /* ============================================================
    小桔成长贪吃蛇
    摄像头 → MediaPipe 手部关键点 → 指尖 → 桔子蛇头
-   蓝色正向变大加分，灰色负向变小扣分。成绩记在本机。
+   蓝色正向变大加分，灰色负向变小扣分。成绩同步到同一份网上排行榜。
    ============================================================ */
 
 import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.mjs';
@@ -121,6 +121,7 @@ let mood = 'ok';
 let moodUntil = 0;
 let lastResultRank = null;
 let leftAfterOver = false;
+let rankView = 0;
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -182,7 +183,16 @@ function roundRect(c, x, y, w, h, r){
   c.closePath();
 }
 
-/* ---------------- 排行榜（本机） ---------------- */
+/* ---------------- 排行榜（所有设备共用） ---------------- */
+const SCORE_URL = 'https://crudcrud.com/api/6366cd58b1344ab785bfcbc3e07d2369/scores';
+const PENDING_KEY = 'orange-snake-pending-v1';
+let boardTask = Promise.resolve();
+
+function enqueueBoard(fn){
+  const run = boardTask.then(fn, fn);
+  boardTask = run.then(() => {}, () => {});
+  return run;
+}
 function loadBoard(){
   try {
     const raw = JSON.parse(localStorage.getItem(BOARD_KEY) || '[]');
@@ -191,30 +201,140 @@ function loadBoard(){
   } catch { return []; }
 }
 function saveBoard(rows){
-  localStorage.setItem(BOARD_KEY, JSON.stringify(rows.slice(0, 40)));
+  localStorage.setItem(BOARD_KEY, JSON.stringify(rows.slice(0, 80)));
 }
-function commitScore(name, finalScore){
-  const board = loadBoard();
-  const key = name.trim();
-  let row = board.find(x => x.name === key);
-  let improved = false;
-  if (!row){
-    row = { name: key, score: finalScore, size: bodyLen, at: Date.now(), runs: 1 };
-    board.push(row);
-    improved = true;
-  } else {
-    row.runs = (row.runs || 1) + 1;
-    if (finalScore > row.score){
-      row.score = finalScore;
-      row.size = bodyLen;
-      row.at = Date.now();
-      improved = true;
+function loadPending(){
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+    return Array.isArray(raw) ? raw.map(normalizeRow).filter(Boolean) : [];
+  } catch { return []; }
+}
+function savePending(rows){
+  localStorage.setItem(PENDING_KEY, JSON.stringify(rows.slice(-20)));
+}
+function normalizeRow(x){
+  if (!x || typeof x.name !== 'string' || !Number.isFinite(Number(x.score))) return null;
+  const name = x.name.replace(/\s+/g, ' ').trim().slice(0, 12);
+  if (!name) return null;
+  return {
+    name,
+    score: Math.round(Number(x.score)),
+    size: Number.isFinite(Number(x.size)) ? Math.round(Number(x.size)) : 0,
+    at: Number.isFinite(Number(x.at)) ? Number(x.at) : 0
+  };
+}
+function reduceBoard(records){
+  const best = new Map();
+  for (const raw of records){
+    const row = normalizeRow(raw);
+    if (!row) continue;
+    const prev = best.get(row.name);
+    if (!prev || row.score > prev.score || (row.score === prev.score && row.at < prev.at)) best.set(row.name, row);
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score || a.at - b.at);
+}
+function mergeRows(rows, row){
+  const next = rows.map(x => ({ ...x }));
+  const hit = next.find(x => x.name === row.name);
+  if (!hit) next.push({ ...row });
+  else if (row.score > hit.score || (row.score === hit.score && row.at < hit.at)){
+    hit.score = row.score;
+    hit.size = row.size;
+    hit.at = row.at;
+  }
+  next.sort((a, b) => b.score - a.score || a.at - b.at);
+  return next;
+}
+function pause(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+async function postScore(row){
+  let last;
+  for (let i = 0; i < 3; i++){
+    try {
+      const res = await fetch(SCORE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...row, at: String(row.at) }),
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!res.ok) throw new Error('post ' + res.status);
+      return;
+    } catch (err) {
+      last = err;
+      if (i < 2) await pause(500 * (i + 1));
     }
   }
-  board.sort((a, b) => b.score - a.score || a.at - b.at);
+  throw last;
+}
+async function fetchScores(){
+  let last;
+  for (let i = 0; i < 3; i++){
+    try {
+      const res = await fetch(SCORE_URL, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error('get ' + res.status);
+      const data = await res.json();
+      if (!Array.isArray(data)) throw new Error('bad board');
+      return data;
+    } catch (err) {
+      last = err;
+      if (i < 2) await pause(400);
+    }
+  }
+  throw last;
+}
+async function flushPending(){
+  const pending = loadPending();
+  if (!pending.length) return;
+  const left = [];
+  for (const row of pending){
+    try { await postScore(row); }
+    catch { left.push(row); }
+  }
+  savePending(left);
+  if (left.length) throw new Error('pending');
+}
+async function pullBoard(){
+  try { await flushPending(); } catch { /* 旧成绩没传上去也不挡住这次读取 */ }
+  const board = reduceBoard(await fetchScores());
   saveBoard(board);
-  const rank = board.findIndex(x => x.name === key) + 1;
-  return { rank, total: board.length, improved, best: row.score, board };
+  return board;
+}
+async function publishScore(name, finalScore, size){
+  const row = { name, score: finalScore, size, at: Date.now() };
+  try {
+    try { await flushPending(); } catch { /* 先记这一局 */ }
+    await postScore(row);
+    const records = await fetchScores();
+    const board = reduceBoard(records);
+    saveBoard(board);
+    let prevBest = null;
+    for (const raw of records){
+      const item = normalizeRow(raw);
+      if (!item || item.name !== name || item.at === row.at) continue;
+      if (prevBest === null || item.score > prevBest) prevBest = item.score;
+    }
+    const mine = board.find(x => x.name === name) || row;
+    const rank = Math.max(1, board.findIndex(x => x.name === name) + 1);
+    return {
+      rank, total: board.length, improved: prevBest === null || finalScore > prevBest,
+      best: mine.score, board, synced: true
+    };
+  } catch {
+    const pending = loadPending();
+    pending.push(row);
+    savePending(pending);
+    const prev = loadBoard().find(x => x.name === name);
+    const board = mergeRows(loadBoard(), row);
+    saveBoard(board);
+    const mine = board.find(x => x.name === name) || row;
+    return {
+      rank: Math.max(1, board.findIndex(x => x.name === name) + 1),
+      total: board.length,
+      improved: !prev || finalScore > prev.score,
+      best: mine.score,
+      board,
+      synced: false
+    };
+  }
 }
 function renderBoard(board, me){
   ui.scrBoard.classList.add('on');
@@ -236,16 +356,6 @@ function boardRow(row, index, me){
   return '<li class="' + cls + '"><span class="rk">' + (index + 1) + '</span><span class="nm">' +
     esc(row.name) + '</span><span class="sc">' + row.score + '</span></li>';
 }
-function clearBoard(){
-  if (!confirm('清空这台设备上的排行榜？')) return;
-  localStorage.removeItem(BOARD_KEY);
-  toast('排行榜已清空');
-  if (state === 'over'){
-    lastResultRank = { rank: '—', total: 0, improved: false, best: score, board: [] };
-    timeUp(true);
-  } else showRanks();
-}
-
 function captureName(){
   const name = nameInput.value.replace(/\s+/g, ' ').trim().slice(0, 12);
   if (!name){
@@ -644,6 +754,7 @@ function hidePanel(){
 }
 
 function showMenu(){
+  rankView++;
   stopCamera();
   state = 'idle';
   running = false;
@@ -651,7 +762,7 @@ function showMenu(){
   timeLeft = CFG.ROUND_SEC;
   syncUI();
   setStatus('待机 · 写下名字再开始');
-  ui.hint.textContent = '// 成绩记在这台设备上，同一名字留最高分';
+  ui.hint.textContent = '// 成绩同步到网上，同一名字留最高分';
   showPanel({
     title: '小桔成长贪吃蛇',
     sub: '伸出食指，带动小桔去吃。蓝底变大，灰底缩小。限时 ' + CFG.ROUND_SEC + ' 秒。',
@@ -660,7 +771,7 @@ function showMenu(){
       '<li><b>伸食指</b> 指尖就是小桔。整只手在画面里更好认。</li>' +
       '<li><b>吃蓝底</b> 知识、目标、挑战、协作、创新、技能、复盘，<span class="plus">+12</span> 并且变大。</li>' +
       '<li><b>躲开灰底</b> 安逸、拖延、消极、焦虑、内耗，<span class="minus">−10</span> 并且缩小。</li>' +
-      '<li><b>限时 ' + CFG.ROUND_SEC + ' 秒</b> 结束看排行。同一名字只留最高分。</li>'
+      '<li><b>限时 ' + CFG.ROUND_SEC + ' 秒</b> 结束看排行。同一名字只留最高分，所有设备看到的是同一份榜。</li>'
   });
   ui.scrActions.innerHTML =
     '<button class="btn primary" id="btnStart" type="button">开始<i>开启摄像头</i></button>' +
@@ -672,20 +783,31 @@ function showMenu(){
 }
 
 function showRanks(){
+  const token = ++rankView;
   state = 'idle';
-  setStatus('排行榜 · 本机最高分');
+  setStatus('排行榜 · 正在同步', 'wait');
   showPanel({
     title: '排行榜',
-    sub: '保存在这台设备上。同一个名字只保留最高的一局。',
+    sub: '正在读取大家的成绩…',
     name: false,
     rules: ''
   });
-  renderBoard(loadBoard(), playerName || nameInput.value.trim());
+  const me = playerName || nameInput.value.trim();
+  renderBoard(loadBoard(), me);
   ui.scrActions.innerHTML =
-    '<button class="btn primary" id="btnBackRank" type="button">返回<i>回到首页</i></button>' +
-    '<button class="btn ghost" id="btnClear" type="button">清空排行</button>';
+    '<button class="btn primary" id="btnBackRank" type="button">返回<i>回到首页</i></button>';
   $('#btnBackRank').onclick = showMenu;
-  $('#btnClear').onclick = clearBoard;
+  enqueueBoard(() => pullBoard()).then(board => {
+    if (token !== rankView) return;
+    setStatus('排行榜 · 总榜');
+    ui.scrSub.textContent = '所有人共用这一份。同一个名字只保留最高分。';
+    renderBoard(board, me);
+  }).catch(() => {
+    if (token !== rankView) return;
+    setStatus('排行榜 · 暂时没同步上', 'err');
+    ui.scrSub.textContent = '网上的排行暂时没读到，先显示这台电脑上次记下的。';
+    renderBoard(loadBoard(), me);
+  });
 }
 
 function startPlay(){
@@ -703,24 +825,18 @@ function startPlay(){
   ui.hint.textContent = '// 吃蓝底，绕开灰底';
 }
 
-function timeUp(refreshOnly){
-  if (state === 'over' && !refreshOnly) return;
-  if (!refreshOnly){
-    state = 'over';
-    overAt = performance.now();
-    timeLeft = 0;
-    syncUI();
-    Sound.stopMusic();
-    Sound.sfx('timeup');
-    lastResultRank = commitScore(playerName, score);
-  }
-  const rank = lastResultRank;
+function paintOver(rank, syncing){
   const tier = tierOf(score);
-  setStatus('时间到 · ' + score + ' 分 · 第 ' + (rank ? rank.rank : '-') + ' 名', 'err');
+  const place = rank && rank.rank ? rank.rank : '…';
+  setStatus(syncing ? '时间到 · 正在同步排名' : ('时间到 · ' + score + ' 分 · 第 ' + place + ' 名'), syncing ? 'wait' : 'err');
   ui.hint.textContent = '// ' + eatenLine();
+  let sub = '正在把这一局写进总排行榜…';
+  if (!syncing && rank && rank.synced === false) sub = '这次没能同步到网上，先记在这台电脑上，下次打开会再试。';
+  else if (!syncing && rank && rank.improved) sub = '这一局已经同步到总排行榜。';
+  else if (!syncing) sub = '本局没有超过你的最高分，总排行榜保持不变。';
   showPanel({
     title: '时间到',
-    sub: rank && rank.improved ? '这一局写进排行榜了。' : '本局没有超过你在这台设备上的最高分。',
+    sub,
     name: false,
     rules:
       '<li><b>再来一局</b> 还是这个名字，直接开。</li>' +
@@ -732,17 +848,36 @@ function timeUp(refreshOnly){
     '<div class="sclbl">本局得分</div>' +
     '<div class="scnum">' + score + '</div>' +
     '<div class="sctier ' + tier.cls + '">' + esc(tier.name) + '</div>' +
-    '<div class="scmeta">' + esc(playerName) + ' · 最佳 ' + (rank ? rank.best : score) +
-      ' · 第 ' + (rank ? rank.rank : 1) + ' 名 / ' + (rank ? rank.total : 1) + '</div>' +
+    '<div class="scmeta">' + esc(playerName) + ' · 最佳 ' + (rank ? rank.best : '…') +
+      ' · 第 ' + place + ' 名' + (rank && rank.total ? ' / ' + rank.total : '') + '</div>' +
     '<div class="eaten">' + esc(sizeName(bodyLen)) + ' · ' + esc(eatenLine()) + '</div>';
-  if (rank) renderBoard(rank.board, playerName);
+  renderBoard(rank && rank.board ? rank.board : loadBoard(), playerName);
   ui.scrActions.innerHTML =
     '<button class="btn primary" id="btnAgain" type="button">再来一局<i>同一个名字</i></button>' +
-    '<button class="btn" id="btnBack" type="button">首页<i>换一位玩家</i></button>' +
-    '<button class="btn ghost" id="btnClear2" type="button">清空排行</button>';
+    '<button class="btn" id="btnBack" type="button">首页<i>换一位玩家</i></button>';
   $('#btnAgain').onclick = () => startPlay();
   $('#btnBack').onclick = () => showMenu();
-  $('#btnClear2').onclick = clearBoard;
+}
+function timeUp(){
+  if (state === 'over') return;
+  state = 'over';
+  overAt = performance.now();
+  timeLeft = 0;
+  syncUI();
+  Sound.stopMusic();
+  Sound.sfx('timeup');
+  const token = ++rankView;
+  const snapshot = { name: playerName, score, size: bodyLen };
+  lastResultRank = null;
+  paintOver(null, true);
+  enqueueBoard(() => publishScore(snapshot.name, snapshot.score, snapshot.size)).then(rank => {
+    lastResultRank = rank;
+    if (token !== rankView || state !== 'over') return;
+    paintOver(rank, false);
+  }).catch(() => {
+    if (token !== rankView || state !== 'over') return;
+    paintOver({ rank: '—', total: 0, improved: false, best: snapshot.score, board: loadBoard(), synced: false }, false);
+  });
 }
 
 function stopCamera(){
@@ -1343,7 +1478,7 @@ function frame(now){
       lastWholeSec = whole;
       if (whole <= 3 && whole > 0) Sound.sfx('tick');
     }
-    if (timeLeft <= 0) timeUp(false);
+    if (timeLeft <= 0) timeUp();
     else checkFood();
     syncUI();
   } else if (state === 'over'){
@@ -1442,6 +1577,7 @@ window.addEventListener('keydown', e => {
 resizeOverlay();
 fitStage();
 showMenu();
+enqueueBoard(() => pullBoard()).catch(() => {});
 loop();
 
 window.__gs = {
