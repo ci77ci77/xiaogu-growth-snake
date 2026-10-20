@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>小桔成长贪吃蛇</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<div class="deco" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-dot" aria-hidden="true"></span>
+      <span class="brand-name">小桔成长贪吃蛇</span>
+    </div>
+    <div class="readouts">
+      <div class="ro"><span class="k">玩家</span><span class="v dim" id="uiName">—</span></div>
+      <div class="ro"><span class="k">得分</span><span class="v" id="uiScore">0</span></div>
+      <div class="ro"><span class="k">剩余</span><span class="v" id="uiTime">0:30</span></div>
+      <div class="ro"><span class="k">体型</span><span class="v" id="uiSize">小桔</span></div>
+      <div class="ro"><span class="k">帧率</span><span class="v dim" id="uiFps">--</span></div>
+    </div>
+  </header>
+
+  <div class="stagewrap" id="stagewrap">
+    <main class="stage" id="stage">
+      <div class="titlebar">
+        <span class="tb-name">小桔成长贪吃蛇</span>
+        <span class="tb-right">
+          <button class="musicbtn" id="btnMusic" title="关闭音乐" type="button">♪</button>
+          <span class="tb-dots"><i></i><i></i><i></i></span>
+        </span>
+      </div>
+      <div class="stage-body">
+        <canvas id="board"></canvas>
+
+        <div class="cam hide" id="cam">
+          <video id="video" playsinline autoplay muted></video>
+          <canvas id="overlay"></canvas>
+          <div class="cam-tag"><i class="dot"></i>摄像头 · 手部关键点 · 21 点</div>
+        </div>
+
+        <button class="ctrlpt" id="ctrlpt" type="button" title="切换控制关键点">
+          <span class="k">控制点</span><span class="v" id="ctrlptName">食指尖</span><span class="id" id="ctrlptId">#8</span>
+        </button>
+
+        <div class="legend" id="legend">
+          <span class="lg good">蓝底 +12 · 知识 目标 挑战 协作 创新 技能 复盘</span>
+          <span class="lg bad">灰底 −10 · 安逸 拖延 消极 焦虑 内耗</span>
+        </div>
+
+        <div class="toast" id="toast"></div>
+
+        <div class="screen" id="screen">
+          <div class="panel">
+            <div class="mark" aria-hidden="true">
+              <svg viewBox="0 0 72 72">
+                <defs>
+                  <radialGradient id="og" cx="36%" cy="32%" r="72%">
+                    <stop offset="0" stop-color="#FFF6D0"/>
+                    <stop offset=".42" stop-color="#FF9E1B"/>
+                    <stop offset="1" stop-color="#EF6200"/>
+                  </radialGradient>
+                </defs>
+                <circle cx="36" cy="40" r="24" fill="url(#og)"/>
+                <ellipse cx="34" cy="32" rx="8" ry="5" fill="rgba(255,255,255,.45)" transform="rotate(-28 34 32)"/>
+                <path d="M36 20c2-8 10-12 14-12-2 6-6 10-12 12z" fill="#3FA34D"/>
+                <path d="M36 20c1-7-2-12-2-12 3 2 5 8 4 12z" fill="#2F8A3E"/>
+              </svg>
+            </div>
+            <div class="ptitle" id="scrTitle">小桔成长贪吃蛇</div>
+            <div class="psub" id="scrSub"></div>
+            <div class="scorecard" id="scrScore"></div>
+            <label class="namebox on" id="nameBox">
+              <span>玩家姓名</span>
+              <input id="nameInput" maxlength="12" placeholder="怎么称呼你" autocomplete="off" enterkeyhint="done" />
+            </label>
+            <ol class="board" id="scrBoard"></ol>
+            <div class="actions" id="scrActions"></div>
+            <ul class="rules" id="scrRules"></ul>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="botbar">
+    <div class="stat"><i class="led" id="led"></i><span id="stat">待机 · 写下名字再开始</span></div>
+    <div class="hint" id="hint">// 成绩记在这台设备上</div>
+  </footer>
+
+</div>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
