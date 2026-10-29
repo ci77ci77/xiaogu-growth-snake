@@ -894,8 +894,10 @@ function stopCamera(){
 async function ensureModel(){
   if (landmarker) return landmarker;
   setStatus('加载中 · 手部识别模型', 'wait');
-  ui.hint.textContent = '// 模型在本地，第一次会稍等';
+  ui.hint.textContent = '// 第一次约 17MB，请耐心等 1~2 分钟';
+  if (ui.scrSub) ui.scrSub.textContent = '正在下载手部识别文件…';
   const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+  if (ui.scrSub) ui.scrSub.textContent = '正在创建手部识别器，约需 1 分钟…';
   const base = delegate => ({
     baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
     runningMode: 'VIDEO',
@@ -907,6 +909,7 @@ async function ensureModel(){
   try {
     landmarker = await HandLandmarker.createFromOptions(vision, base('GPU'));
   } catch {
+    if (ui.scrSub) ui.scrSub.textContent = '显卡模式没就绪，改用普通模式…';
     landmarker = await HandLandmarker.createFromOptions(vision, base('CPU'));
   }
   return landmarker;
