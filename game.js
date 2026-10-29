@@ -4,7 +4,7 @@
    蓝色正向变大加分，灰色负向变小扣分。成绩同步到同一份网上排行榜。
    ============================================================ */
 
-import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.mjs';
+import { FilesetResolver, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs';
 
 const CFG = {
   EMA: 0.55,
@@ -895,9 +895,9 @@ async function ensureModel(){
   if (landmarker) return landmarker;
   setStatus('加载中 · 手部识别模型', 'wait');
   ui.hint.textContent = '// 模型在本地，第一次会稍等';
-  const vision = await FilesetResolver.forVisionTasks('./vendor/wasm');
+  const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
   const base = delegate => ({
-    baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate },
+    baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
     runningMode: 'VIDEO',
     numHands: 2,
     minHandDetectionConfidence: 0.5,
