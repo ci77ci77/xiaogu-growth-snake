@@ -184,7 +184,7 @@ function roundRect(c, x, y, w, h, r){
 }
 
 /* ---------------- 排行榜（所有设备共用） ---------------- */
-const SCORE_URL = 'https://crudcrud.com/api/6366cd58b1344ab785bfcbc3e07d2369/scores';
+const SCORE_URL = 'https://orange-snake-board.lipinwang6.workers.dev/scores';
 const PENDING_KEY = 'orange-snake-pending-v1';
 let boardTask = Promise.resolve();
 
@@ -246,6 +246,13 @@ function mergeRows(rows, row){
   return next;
 }
 function pause(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+function withTimeout(promise, ms, label){
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label || '超时')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 async function postScore(row){
   let last;
   for (let i = 0; i < 3; i++){
@@ -891,25 +898,66 @@ function stopCamera(){
 }
 
 /* ---------------- 摄像头 / 模型 ---------------- */
+let modelTask = null;
+function loadingActions(){
+  ui.scrActions.innerHTML =
+    '<button class="btn" id="btnSkipCam" type="button">先用鼠标玩<i>不等手部识别</i></button>' +
+    '<button class="btn ghost" id="btnCancelLoad" type="button">返回首页</button>';
+  $('#btnSkipCam').onclick = startDemo;
+  $('#btnCancelLoad').onclick = () => { stopCamera(); showMenu(); };
+}
+function failCamera(err){
+  console.error(err);
+  state = 'error';
+  stopCamera();
+  const msg = String(err && (err.message || err.name) || err);
+  const modelFail = /模型|识别|wasm|timeout|超时/i.test(msg);
+  setStatus(modelFail ? '手部识别没准备好' : '摄像头没打开', 'err');
+  showPanel({
+    title: modelFail ? '手部识别没准备好' : '摄像头没打开',
+    sub: msg,
+    name: true,
+    rules:
+      '<li>第一次要下载约 17MB 的识别文件，网慢时会多等一会儿。</li>' +
+      '<li>页面需要 https 或 localhost，并允许浏览器使用摄像头。</li>' +
+      '<li>等不及或不想开摄像头，用演示模式，用鼠标带动小桔。</li>'
+  });
+  ui.scrActions.innerHTML =
+    '<button class="btn primary" id="btnDemo2" type="button">进入演示<i>鼠标带动小桔</i></button>' +
+    '<button class="btn" id="btnRetry" type="button">重试<i>再准备一次</i></button>';
+  $('#btnDemo2').onclick = startDemo;
+  $('#btnRetry').onclick = startCamera;
+}
 async function ensureModel(){
   if (landmarker) return landmarker;
-  setStatus('加载中 · 手部识别模型', 'wait');
-  ui.hint.textContent = '// 模型在本地，第一次会稍等';
-  const vision = await FilesetResolver.forVisionTasks('./vendor/wasm');
-  const base = delegate => ({
-    baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate },
-    runningMode: 'VIDEO',
-    numHands: 2,
-    minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5
+  if (modelTask) return modelTask;
+  modelTask = (async () => {
+    setStatus('加载中 · 手部识别模型', 'wait');
+    ui.hint.textContent = '// 第一次大约 17MB，请稍等';
+    if (ui.scrSub) ui.scrSub.textContent = '正在下载手部识别文件…';
+    const vision = await withTimeout(FilesetResolver.forVisionTasks('./vendor/wasm'), 25000, '手部引擎下载超时，请检查网络后重试');
+    if (ui.scrSub) ui.scrSub.textContent = '正在创建手部识别器…';
+    const base = delegate => ({
+      baseOptions: { modelAssetPath: './models/hand_landmarker.task', delegate },
+      runningMode: 'VIDEO',
+      numHands: 2,
+      minHandDetectionConfidence: 0.5,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    try {
+      landmarker = await withTimeout(HandLandmarker.createFromOptions(vision, base('GPU')), 12000, 'GPU 识别超时');
+    } catch (gpuErr) {
+      console.warn(gpuErr);
+      if (ui.scrSub) ui.scrSub.textContent = '显卡识别没就绪，改用普通模式…';
+      landmarker = await withTimeout(HandLandmarker.createFromOptions(vision, base('CPU')), 20000, '手部识别创建超时，可以先用鼠标玩');
+    }
+    return landmarker;
+  })().catch(err => {
+    modelTask = null;
+    throw err;
   });
-  try {
-    landmarker = await HandLandmarker.createFromOptions(vision, base('GPU'));
-  } catch {
-    landmarker = await HandLandmarker.createFromOptions(vision, base('CPU'));
-  }
-  return landmarker;
+  return modelTask;
 }
 
 async function startCamera(){
@@ -920,20 +968,25 @@ async function startCamera(){
   state = 'loading';
   camBox.classList.remove('hide');
   showPanel({ title: '加载中', sub: '正在准备手部识别…', name: false, rules: '' });
-  ui.scrActions.innerHTML = '';
+  loadingActions();
   try {
     await ensureModel();
+    if (state !== 'loading') return;
     ui.scrSub.textContent = '正在请求摄像头…';
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await withTimeout(navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
       audio: false
-    });
+    }), 20000, '摄像头权限没给，或浏览器一直在等待');
+    if (state !== 'loading'){
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
     video.srcObject = stream;
     await video.play();
-    await new Promise(res => {
+    await withTimeout(new Promise(res => {
       if (video.videoWidth) return res();
       video.addEventListener('loadedmetadata', res, { once: true });
-    });
+    }), 8000, '摄像头画面没有出来');
     resizeOverlay();
     lastStageW = 0;
     fitStage();
@@ -945,24 +998,8 @@ async function startCamera(){
     ui.hint.textContent = '// ' + video.videoWidth + '×' + video.videoHeight + ' · ' + CTRL_PTS[ctrlIdx].n;
     toast(playerName + '，伸出食指就开始');
   } catch (err){
-    console.error(err);
-    state = 'error';
-    stopCamera();
-    setStatus('摄像头没打开', 'err');
-    showPanel({
-      title: '摄像头没打开',
-      sub: String(err && (err.message || err.name) || err),
-      name: true,
-      rules:
-        '<li>页面需要 https 或 localhost 才能用摄像头。</li>' +
-        '<li>到系统设置里允许浏览器使用摄像头。</li>' +
-        '<li>没有摄像头时，用演示模式用鼠标玩。</li>'
-    });
-    ui.scrActions.innerHTML =
-      '<button class="btn primary" id="btnDemo2" type="button">进入演示<i>鼠标带动小桔</i></button>' +
-      '<button class="btn" id="btnRetry" type="button">重试<i>再要一次权限</i></button>';
-    $('#btnDemo2').onclick = startDemo;
-    $('#btnRetry').onclick = startCamera;
+    if (state !== 'loading') return;
+    failCamera(err);
   }
 }
 
